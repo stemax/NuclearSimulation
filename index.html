@@ -19,102 +19,295 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 
     <script>
-        // --- Настройки и изменяемые параметры взрыва ---
+        // --- Параметры конфигурации ---
         const CONFIG = {
-            particleCount: 15000,    // Общее количество частиц
-            yieldPower: 1.8,         // Мощность взрыва (влияет на финальный размер)
-            riseSpeed: 0.12,         // Скорость подъема гриба
-            expansionSpeed: 0.15,    // Скорость расширения купола
-            duration: 8.0            // Длительность активной фазы в секундах
+            particleCount: 18000,
+            yieldPower: 2.0,         
+            riseSpeed: 0.15,         
+            expansionSpeed: 0.18,    
+            duration: 9.0,
+            buildingCount: 350       // Количество генерируемых зданий
         };
 
         // --- Инициализация сцены ---
         const scene = new THREE.Scene();
-        scene.fog = new THREE.FogExp2(0x050505, 0.015);
+        scene.fog = new THREE.FogExp2(0x0a0a0a, 0.012);
 
-        const camera = new THREE.PerspectiveCamera(65, window.innerWidth / window.innerHeight, 0.1, 1000);
-        camera.position.set(0, 20, 60);
+        const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 35, 75);
 
         const renderer = new THREE.WebGLRenderer({ antialias: true });
         renderer.setSize(window.innerWidth, window.innerHeight);
         document.body.appendChild(renderer.domElement);
 
-        // --- Добавление земли и освещения ---
-        const grid = new THREE.GridHelper(200, 50, 0x444444, 0x222222);
-        grid.position.y = -0.1;
-        scene.add(grid);
+        // Земля
+        const groundGeo = new THREE.PlaneGeometry(300, 300);
+        const groundMat = new THREE.MeshBasicMaterial({ color: 0x111111, side: THREE.DoubleSide });
+        const ground = new THREE.Mesh(groundGeo, groundMat);
+        ground.rotation.x = Math.PI / 2;
+        scene.add(ground);
 
-        const flashLight = new THREE.PointLight(0xffaa44, 10, 100);
+        // Освещение от вспышки
+        const flashLight = new THREE.PointLight(0xff7700, 15, 150);
         flashLight.position.set(0, 2, 0);
         scene.add(flashLight);
 
-        // --- Создание системы частиц ---
+        // --- Генерация 3D Города ---
+        const buildings = [];
+        const buildingGroup = new THREE.Group();
+        scene.add(buildingGroup);
+
+        function createCity() {
+            // Удаляем старый город, если он был
+            while(buildingGroup.children.length > 0) { 
+                buildingGroup.remove(buildingGroup.children[0]); 
+            }
+            buildings.length = 0;
+
+            const boxGeo = new THREE.BoxGeometry(1, 1, 1);
+
+            for (let i = 0; i < CONFIG.buildingCount; i++) {
+                // Случайные координаты города вокруг эпицентра (исключая самый центр)
+                const angle = Math.random() * Math.PI * 2;
+                const distance = 8 + Math.random() * 70; 
+                const x = Math.cos(angle) * distance;
+                const z = Math.sin(angle) * distance;
+
+                // Случайные размеры небоскребов
+                const w = 1.5 + Math.random() * 2.5;
+                const h = 4 + Math.random() * (25 - distance * 0.2); // Чем дальше от центра, тем ниже здания
+                const d = 1.5 + Math.random() * 2.5;
+
+                // Начальный серый/неоновый цвет зданий мирного города
+                const mat = new THREE.MeshBasicMaterial({
+                    color: new THREE.Color().setHSL(0.6, 0.2, 0.3 + Math.random() * 0.2)
+                });
+
+                const mesh = new THREE.Mesh(boxGeo, mat);
+                mesh.scale.set(w, h, d);
+                // Сдвигаем опорную точку вниз, чтобы масштабирование шло от земли
+                mesh.position.set(x, h / 2, z); 
+
+                buildingGroup.add(mesh);
+
+                // Сохраняем исходные параметры для анимации разрушения
+                buildings.push({
+                    mesh: mesh,
+                    material: mat,
+                    initialHeight: h,
+                    distanceFromCenter: distance,
+                    isDestroyed: false
+                });
+            }
+        }
+
+        // --- Создание эффектов взрыва (Система частиц) ---
         const geometry = new THREE.BufferGeometry();
         const positions = new Float32Array(CONFIG.particleCount * 3);
         const colors = new Float32Array(CONFIG.particleCount * 3);
-        
-        // Кастомные свойства для анимации каждой отдельной частицы
-        const pTypes = new Float32Array(CONFIG.particleCount); // 0: вспышка, 1: ножка, 2: шляпка
+        const pTypes = new Float32Array(CONFIG.particleCount); 
         const pSpeed = new Float32Array(CONFIG.particleCount);
         const pDirections = new Float32Array(CONFIG.particleCount * 3);
 
-        const colorObj = new THREE.Color();
-
         for (let i = 0; i < CONFIG.particleCount; i++) {
-            // Начальная точка — эпицентр
-            positions[i * 3] = 0;
-            positions[i * 3 + 1] = 0;
-            positions[i * 3 + 2] = 0;
-
-            // Распределение частиц по зонам анатомии взрыва
+            positions[i * 3] = positions[i * 3 + 1] = positions[i * 3 + 2] = 0;
             const rand = Math.random();
-            if (rand < 0.2) {
-                pTypes[i] = 0; // Огненный шар / Сфера вспышки
+
+            if (rand < 0.25) {
+                pTypes[i] = 0; // Взрывная волна и вспышка (сфера)
                 const theta = Math.random() * Math.PI * 2;
                 const phi = Math.acos(Math.random() * 2 - 1);
                 pDirections[i * 3] = Math.sin(phi) * Math.cos(theta);
-                pDirections[i * 3 + 1] = Math.abs(Math.sin(phi) * Math.sin(theta)); // Больше вверх
+                pDirections[i * 3 + 1] = Math.abs(Math.sin(phi) * Math.sin(theta)) * 0.4; // Расплющенная к земле сфера
                 pDirections[i * 3 + 2] = Math.cos(phi);
-                pSpeed[i] = (0.5 + Math.random() * 0.5) * CONFIG.expansionSpeed;
+                pSpeed[i] = (0.6 + Math.random() * 0.4) * CONFIG.expansionSpeed;
             } else if (rand < 0.5) {
-                pTypes[i] = 1; // Столб дыма (ножка гриба)
-                pDirections[i * 3] = (Math.random() * 2 - 1) * 0.15; 
-                pDirections[i * 3 + 1] = (0.5 + Math.random() * 0.5) * CONFIG.riseSpeed; 
-                pDirections[i * 3 + 2] = (Math.random() * 2 - 1) * 0.15;
+                pTypes[i] = 1; // Столб взрыва
+                pDirections[i * 3] = (Math.random() * 2 - 1) * 0.1;
+                pDirections[i * 3 + 1] = (0.6 + Math.random() * 0.4) * CONFIG.riseSpeed;
+                pDirections[i * 3 + 2] = (Math.random() * 2 - 1) * 0.1;
                 pSpeed[i] = 1.0;
             } else {
                 pTypes[i] = 2; // Шляпка гриба
                 const angle = Math.random() * Math.PI * 2;
-                pDirections[i * 3] = Math.cos(angle); 
-                pDirections[i * 3 + 1] = (Math.random() * 0.3); // Расползание по горизонтали
+                pDirections[i * 3] = Math.cos(angle);
+                pDirections[i * 3 + 1] = (Math.random() * 0.2);
                 pDirections[i * 3 + 2] = Math.sin(angle);
-                pSpeed[i] = (0.3 + Math.random() * 0.7) * CONFIG.expansionSpeed;
+                pSpeed[i] = (0.4 + Math.random() * 0.6) * CONFIG.expansionSpeed;
             }
-
-            // Базовый ярко-оранжевый цвет в начале взрыва
-            colorObj.setHSL(0.08, 1.0, 0.6);
-            colors[i * 3] = colorObj.r;
-            colors[i * 3 + 1] = colorObj.g;
-            colors[i * 3 + 2] = colorObj.b;
         }
 
         geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
         geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 
-        // Материал частиц (эффект светящегося газа)
         const material = new THREE.PointsMaterial({
-            size: 0.6,
+            size: 0.8,
             vertexColors: true,
             transparent: true,
-            opacity: 0.8,
-            blending: THREE.AdditiveBlending, // Сложение цветов для эффекта горения
+            opacity: 0.85,
+            blending: THREE.AdditiveBlending,
             depthWrite: false
         });
 
         const particleSystem = new THREE.Points(geometry, material);
         scene.add(particleSystem);
 
-        // --- Цикл анимации ---
+        // --- Первичный запуск ---
+        createCity();
+        const clock = new THREE.Clock();
+
+        // --- Главный игровой цикл анимации ---
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const elapsedTime = clock.getElapsedTime();
+
+            // Автоматический перезапуск симуляции
+            if (elapsedTime > CONFIG.duration) {
+                clock.start();
+                resetSimulation();
+                return;
+            }
+
+            const posAttr = geometry.attributes.position;
+            const colorAttr = geometry.attributes.color;
+
+            flashLight.intensity = Math.max(0, (1.0 - (elapsedTime / 3.0))) * 25;
+
+            // Текущий радиус поражения ударной волны
+            const currentWaveRadius = elapsedTime * CONFIG.expansionSpeed * 65 * CONFIG.yieldPower;
+
+            // 1. Физика частиц взрыва
+            for (let i = 0; i < CONFIG.particleCount; i++) {
+                let x = posAttr.getX(i);
+                let y = posAttr.getY(i);
+                let z = posAttr.getZ(i);
+                const type = pTypes[i];
+                const speed = pSpeed[i];
+
+                if (type === 0) {
+                    x += pDirections[i * 3] * speed * CONFIG.yieldPower;
+                    y += pDirections[i * 3 + 1] * speed * CONFIG.yieldPower;
+                    z += pDirections[i * 3 + 2] * speed * CONFIG.yieldPower;
+                } else if (type === 1) {
+                    if (y < 35 * CONFIG.yieldPower) {
+                        x += pDirections[i * 3] * speed;
+                        y += pDirections[i * 3 + 1] * speed;
+                        z += pDirections[i * 3 + 2] * speed;
+                    }
+                } else if (type === 2) {
+                    const cloudHeight = 30 * CONFIG.yieldPower;
+                    if (y < cloudHeight) {
+                        y += CONFIG.riseSpeed * 1.6;
+                    } else {
+                        x += pDirections[i * 3] * speed * 0.9;
+                        y += pDirections[i * 3 + 1] * speed * 0.3;
+                        z += pDirections[i * 3 + 2] * speed * 0.9;
+                    }
+                }
+
+                posAttr.setXYZ(i, x, y, z);
+
+                // Изменение цвета фаз горения
+                const lifeRatio = elapsedTime / CONFIG.duration;
+                let r, g, b;
+                if (lifeRatio < 0.15) {
+                    r = 1.0; g = 0.95; b = 0.8; // Вспышка рентгеновского излучения
+                } else if (lifeRatio < 0.45) {
+                    r = 1.0; g = 0.4 - (lifeRatio * 0.4); b = 0.0; // Огненный шар
+                } else {
+                    const c = Math.max(0.02, 0.9 - lifeRatio) * 0.35; // Радиоактивное облако пыли
+                    r = c * 1.1; g = c; b = c;
+                }
+                colorAttr.setXYZ(i, r, g, b);
+            }
+
+            posAttr.needsUpdate = true;
+            colorAttr.needsUpdate = true;
+
+             buildings.forEach(b => {
+                // Если ударная волна дошла до здания
+                if (currentWaveRadius > b.distanceFromCenter) {
+                    if (!b.isDestroyed) {
+                        // Помечаем здание как уничтоженное взрывной волной
+                        b.isDestroyed = true;
+                        
+                        // Меняем цвет материалов на обгоревший/пепельный
+                        if (b.mesh.material) {
+                            b.mesh.material.color.setHex(0x1a1a1a);
+                        }
+                    }
+
+                    // Эффект плавного оседания и разрушения здания
+                    if (b.mesh.scale.y > 0.05) {
+                        // Складываем здание по вертикали (оседание)
+                        b.mesh.scale.y -= 0.05 * CONFIG.yieldPower;
+                        
+                        // Смещаем позицию Y вниз, чтобы низ здания оставался на земле
+                        b.mesh.position.y = (b.initialHeight * b.mesh.scale.y) / 2;
+                        
+                        // Немного наклоняем здание в сторону от эпицентра взрыва
+                        const angle = Math.atan2(b.mesh.position.z, b.mesh.position.x);
+                        b.mesh.rotation.z += Math.cos(angle) * 0.01;
+                        b.mesh.rotation.x -= Math.sin(angle) * 0.01;
+                    } else {
+                        // Полностью разрушенное здание превращается в плоские руины
+                        b.mesh.scale.y = 0.01;
+                        b.mesh.position.y = 0.005;
+                    }
+                }
+            });
+  }
+
+        // --- 3. Генерация города ---
+        const buildings = [];
+        const buildingGroup = new THREE.Group();
+        scene.add(buildingGroup);
+
+        function generateCity() {
+            // Удаляем старые здания при перезапуске
+            while(buildingGroup.children.length > 0){ 
+                buildingGroup.remove(buildingGroup.children[0]); 
+            }
+            buildings.length = 0;
+
+            const count = 150; // Количество зданий в городе
+            for (let i = 0; i < count; i++) {
+                // Случайные размеры дома
+                const w = 1 + Math.random() * 2;
+                const h = 3 + Math.random() * 8;
+                const d = 1 + Math.random() * 2;
+
+                const geometry = new THREE.BoxGeometry(w, h, d);
+                // Используем уникальный материал для каждого здания, чтобы красить отдельно
+                const material = new THREE.MeshBasicMaterial({ color: 0x556677 });
+                const mesh = new THREE.Mesh(geometry, material);
+
+                // Размещаем здания по кругу вокруг эпицентра, исключая сам центр
+                const angle = Math.random() * Math.PI * 2;
+                const radius = 15 + Math.random() * 60; // Радиус городской застройки
+
+                const x = Math.cos(angle) * radius;
+                const z = Math.sin(angle) * radius;
+
+                mesh.position.set(x, h / 2, z);
+                buildingGroup.add(mesh);
+
+                // Сохраняем метаданные здания для механики уничтожения
+                buildings.push({
+                    mesh: mesh,
+                    initialHeight: h,
+                    distanceFromCenter: radius,
+                    isDestroyed: false
+                });
+            }
+        }
+
+        // Создаем город при первом запуске
+        generateCity();
+
+
+        // --- 4. Обновленный цикл анимации ---
         const clock = new THREE.Clock();
 
         function animate() {
@@ -122,19 +315,26 @@
 
             const elapsedTime = clock.getElapsedTime();
             
-            // Сброс анимации по циклу
+            // Автоматический перезапуск симуляции по истечении времени
             if (elapsedTime > CONFIG.duration) {
                 clock.start();
-                resetParticles();
+                resetSimulation();
                 return;
             }
 
             const posAttr = geometry.attributes.position;
             const colorAttr = geometry.attributes.color;
 
-            // Управление яркостью общей вспышки света
-            flashLight.intensity = Math.max(0, (1.0 - (elapsedTime / 2.0))) * 15;
+            // Динамический радиус ударной волны (скорость * время)
+            const currentWaveRadius = elapsedTime * 25.0 * CONFIG.expansionSpeed;
 
+            // Запуск механики уничтожения зданий
+            updateCityDestruction(currentWaveRadius);
+
+            // Управление вспышкой света от взрыва
+            flashLight.intensity = Math.max(0, (1.0 - (elapsedTime / 1.5))) * 25;
+
+            // Анимация частиц взрыва (Гриб)
             for (let i = 0; i < CONFIG.particleCount; i++) {
                 let x = posAttr.getX(i);
                 let y = posAttr.getY(i);
@@ -144,27 +344,22 @@
                 const speed = pSpeed[i];
 
                 if (type === 0) {
-                    // Разлет сферы вспышки
                     x += pDirections[i * 3] * speed * CONFIG.yieldPower;
                     y += pDirections[i * 3 + 1] * speed * CONFIG.yieldPower;
                     z += pDirections[i * 3 + 2] * speed * CONFIG.yieldPower;
                 } else if (type === 1) {
-                    // Рост ножки гриба вверх
                     if (y < 25 * CONFIG.yieldPower) {
                         x += pDirections[i * 3] * speed;
                         y += pDirections[i * 3 + 1] * speed;
                         z += pDirections[i * 3 + 2] * speed;
                     }
                 } else if (type === 2) {
-                    // Формирование купола (подъем + расширение на высоте)
                     const targetHeight = 22 * CONFIG.yieldPower;
                     if (y < targetHeight) {
-                        // Поднимаемся в составе ножки
                         y += CONFIG.riseSpeed * 1.5;
                         x += (Math.random() * 2 - 1) * 0.05;
                         z += (Math.random() * 2 - 1) * 0.05;
                     } else {
-                        // Расползаемся в стороны, формируя «шляпку»
                         x += pDirections[i * 3] * speed * 0.8;
                         y += pDirections[i * 3 + 1] * speed * 0.3 + (Math.sin(elapsedTime * 2) * 0.02);
                         z += pDirections[i * 3 + 2] * speed * 0.8;
@@ -173,24 +368,17 @@
 
                 posAttr.setXYZ(i, x, y, z);
 
-                // Динамическое изменение цвета: Огонь -> Дым -> Затухание
+                // Эволюция цвета частиц (Огонь -> Дым)
                 const lifeRatio = elapsedTime / CONFIG.duration;
                 let r, g, b;
 
-                if (lifeRatio < 0.2) {
-                    // Бело-желтая ядерная вспышка
-                    r = 1.0; g = 0.9; b = 0.7;
-                } else if (lifeRatio < 0.5) {
-                    // Переход в пламенный оранжево-красный
-                    r = 1.0;
-                    g = Math.max(0, 0.6 - (lifeRatio * 0.5));
-                    b = 0.0;
+                if (lifeRatio < 0.15) {
+                    r = 1.0; g = 0.95; b = 0.8;
+                } else if (lifeRatio < 0.4) {
+                    r = 1.0; g = Math.max(0, 0.5 - (lifeRatio * 0.4)); b = 0.0;
                 } else {
-                    // Остывание в серый пепел и темный дым
-                    const smokeDarkness = Math.max(0.05, 1.0 - lifeRatio);
-                    r = smokeDarkness * 0.4;
-                    g = smokeDarkness * 0.35;
-                    b = smokeDarkness * 0.35;
+                    const smoke = Math.max(0.05, 1.0 - lifeRatio);
+                    r = smoke * 0.35; g = smoke * 0.3; b = smoke * 0.3;
                 }
 
                 colorAttr.setXYZ(i, r, g, b);
@@ -199,28 +387,34 @@
             posAttr.needsUpdate = true;
             colorAttr.needsUpdate = true;
 
-            // Медленное вращение сцены для обзора
-            particleSystem.rotation.y += 0.002;
+            // Медленный поворот камеры вокруг эпицентра для кинематографичности
+            particleSystem.rotation.y += 0.0015;
+            buildingGroup.rotation.y += 0.0015;
 
             renderer.render(scene, camera);
         }
 
-        function resetParticles() {
+        // --- 5. Функция полного сброса сцены ---
+        function resetSimulation() {
+            // Возвращаем все частицы взрыва в эпицентр
             const posAttr = geometry.attributes.position;
             for (let i = 0; i < CONFIG.particleCount; i++) {
                 posAttr.setXYZ(i, 0, 0, 0);
             }
             posAttr.needsUpdate = true;
+
+            // Перегенерируем город заново целым
+            generateCity();
         }
 
-        // --- Адаптив окна ---
+        // --- Оптимизация под изменение размеров экрана ---
         window.addEventListener('resize', () => {
             camera.aspect = window.innerWidth / window.innerHeight;
             camera.updateProjectionMatrix();
             renderer.setSize(window.innerWidth, window.innerHeight);
         });
 
-        // Запуск
+        // Запуск основного цикла приложения
         animate();
     </script>
 </body>
